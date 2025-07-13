@@ -1,5 +1,17 @@
 # OptimizationApp.py
 
+import folium
+from streamlit_folium import st_folium
+
+# Coordinates for events and depot (Dublin)
+locations = {
+    "Dublin": (53.3498, -6.2603),
+    "Galway": (53.2707, -9.0568),
+    "Cork": (51.8985, -8.4756),
+    "Kilkenny": (52.6541, -7.2448)
+}
+
+
 # Import necessary libraries
 import streamlit as st
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, LpInteger, value
@@ -103,3 +115,28 @@ with col2:
                 if qty and qty > 0:
                     table += f"- {i}: **{int(qty)} units**  \n"
             st.markdown(table or "_No items selected_")
+
+
+
+# --- Map Visualization ---
+st.markdown("## 🗺️ Delivery Route Map")
+
+# Filter visited locations
+route = ['Dublin'] + [e for e in events if y[e].value() == 1] + ['Dublin']  # round trip
+
+m = folium.Map(location=locations["Dublin"], zoom_start=7)
+
+# Add markers
+for loc in route:
+    folium.Marker(
+        locations[loc],
+        popup=loc,
+        icon=folium.Icon(color='blue' if loc != 'Dublin' else 'green')
+    ).add_to(m)
+
+# Draw route
+coords = [locations[loc] for loc in route]
+folium.PolyLine(coords, color="red", weight=2.5, opacity=0.9).add_to(m)
+
+# Show map in Streamlit
+st_folium(m, width=725, height=450)
