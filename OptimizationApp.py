@@ -1,7 +1,5 @@
 # OptimizationApp.py
 
-pip install streamlit
-
 # Import necessary libraries
 import streamlit as st
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, value
