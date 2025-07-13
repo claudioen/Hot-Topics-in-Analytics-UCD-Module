@@ -2,7 +2,7 @@
 
 # Import necessary libraries
 import streamlit as st
-from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, value
+from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, LpInteger, value
 
 st.set_page_config(page_title="📦 StyleSprint Optimizer", layout="wide")
 
@@ -38,22 +38,27 @@ distances = {'Galway': 186, 'Cork': 220, 'Kilkenny': 102}
 # --- Optimization Model ---
 model = LpProblem("Inventory_and_Routing_Optimization", LpMaximize)
 
-x = LpVariable.dicts("Select", [(i, e) for i in items for e in events], 0, 1, LpBinary)
+# Decision Variables
+x = LpVariable.dicts("Select", [(i, e) for i in items for e in events], lowBound=0, cat=LpInteger)
 y = LpVariable.dicts("Visit", events, 0, 1, LpBinary)
 
+# Objective: Maximize profit - travel cost
 model += (
     lpSum(profits[(i, e)] * x[(i, e)] for i in items for e in events) -
     cost_per_km * lpSum(distances[e] * y[e] for e in events)
 )
 
+# Capacity Constraints (global)
 model += lpSum(weights[i] * x[(i, e)] for i in items for e in events) <= van_weight, "WeightCapacity"
 model += lpSum(volumes[i] * x[(i, e)] for i in items for e in events) <= van_volume, "VolumeCapacity"
 
+# Display constraints and linking product assignment to event visit
 for e in events:
     model += lpSum(spaces[i] * x[(i, e)] for i in items) <= display_capacity[e], f"DisplayCap_{e}"
     for i in items:
-        model += x[(i, e)] <= y[e], f"LinkItemToVisit_{i}_{e}"
+        model += x[(i, e)] <= 1000 * y[e], f"LinkItemToVisit_{i}_{e}"
 
+# Solve
 model.solve()
 
 # --- Layout: Two-column Results ---
@@ -68,12 +73,13 @@ with col1:
             st.markdown(f"- {e} ({distances[e]} km)")
 
 with col2:
-    st.markdown("## 📦 Product Allocation")
+    st.markdown("## 📦 Product Quantities per Event")
     for e in events:
         if y[e].value() == 1:
             st.markdown(f"**{e}**")
             table = ""
             for i in items:
-                if x[(i, e)].value() == 1:
-                    table += f"- {i}  \n"
+                qty = x[(i, e)].value()
+                if qty and qty > 0:
+                    table += f"- {i}: **{int(qty)} units**  \n"
             st.markdown(table or "_No items selected_")
