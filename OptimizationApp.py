@@ -25,14 +25,34 @@ display_capacity = {
 events = ['Galway', 'Cork', 'Kilkenny']
 items = ['TShirt', 'Jacket', 'Sneakers', 'Dress']
 
-profits = {
-    ('TShirt', 'Galway'): 8, ('Jacket', 'Galway'): 35, ('Sneakers', 'Galway'): 30, ('Dress', 'Galway'): 20,
-    ('TShirt', 'Cork'): 10, ('Jacket', 'Cork'): 40, ('Sneakers', 'Cork'): 32, ('Dress', 'Cork'): 25,
-    ('TShirt', 'Kilkenny'): 6, ('Jacket', 'Kilkenny'): 30, ('Sneakers', 'Kilkenny'): 28, ('Dress', 'Kilkenny'): 18,
+# ✅ Updated realistic parameters
+weights = {
+    'TShirt': 0.25,
+    'Jacket': 1.8,
+    'Sneakers': 1.2,
+    'Dress': 0.6
 }
-weights = {'TShirt': 0.3, 'Jacket': 2.0, 'Sneakers': 1.5, 'Dress': 0.5}
-volumes = {'TShirt': 0.002, 'Jacket': 0.01, 'Sneakers': 0.007, 'Dress': 0.004}
-spaces = {'TShirt': 1, 'Jacket': 3, 'Sneakers': 2, 'Dress': 1}
+
+volumes = {
+    'TShirt': 0.0015,
+    'Jacket': 0.008,
+    'Sneakers': 0.006,
+    'Dress': 0.0035
+}
+
+spaces = {
+    'TShirt': 1,
+    'Jacket': 3,
+    'Sneakers': 2,
+    'Dress': 1
+}
+
+profits = {
+    ('TShirt', 'Galway'): 10,   ('Jacket', 'Galway'): 40,   ('Sneakers', 'Galway'): 28,   ('Dress', 'Galway'): 22,
+    ('TShirt', 'Cork'): 12,     ('Jacket', 'Cork'): 42,     ('Sneakers', 'Cork'): 30,     ('Dress', 'Cork'): 25,
+    ('TShirt', 'Kilkenny'): 9,  ('Jacket', 'Kilkenny'): 38, ('Sneakers', 'Kilkenny'): 26, ('Dress', 'Kilkenny'): 20
+}
+
 distances = {'Galway': 186, 'Cork': 220, 'Kilkenny': 102}
 
 # --- Optimization Model ---
@@ -52,7 +72,7 @@ model += (
 model += lpSum(weights[i] * x[(i, e)] for i in items for e in events) <= van_weight, "WeightCapacity"
 model += lpSum(volumes[i] * x[(i, e)] for i in items for e in events) <= van_volume, "VolumeCapacity"
 
-# Display constraints and linking product assignment to event visit
+# Display and linking constraints
 for e in events:
     model += lpSum(spaces[i] * x[(i, e)] for i in items) <= display_capacity[e], f"DisplayCap_{e}"
     for i in items:
