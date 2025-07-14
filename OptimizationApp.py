@@ -1,142 +1,334 @@
 # OptimizationApp.py
 
+import streamlit as st
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 import folium
 from streamlit_folium import st_folium
 
-# Coordinates for events and depot (Dublin)
-locations = {
-    "Dublin": (53.3498, -6.2603),
-    "Galway": (53.2707, -9.0568),
-    "Cork": (51.8985, -8.4756),
-    "Kilkenny": (52.6541, -7.2448)
-}
+# ---------------------------
+# 1. Train ML model
+# ---------------------------
+historical_data = pd.DataFrame({
+    "city": ["Dublin", "Cork", "Galway", "Limerick", "Kilkenny", "Waterford"],
+    "past_attendance": [1100, 950, 800, 700, 500, 550],
+    "weather_score": [8, 7, 6, 7, 6, 7],
+    "actual_customers": [1200, 900, 850, 750, 520, 600],
+    "travel_cost": [250, 320, 320, 260, 10, 120]
+})
+historical_data["city_encoded"] = historical_data["city"].astype("category").cat.codes
 
+X = historical_data[["city_encoded", "past_attendance", "weather_score"]]
+y = historical_data["actual_customers"]
 
-# Import necessary libraries
-import streamlit as st
-from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, LpInteger, value
+model = RandomForestRegressor(n_estimators=100, random_state=42)
+model.fit(X, y)
 
-st.set_page_config(page_title="📦 StyleSprint Optimizer", layout="wide")
+# ---------------------------
+# 2. Forecast events
+# ---------------------------
+future_events = pd.DataFrame({
+    "city": ["Dublin", "Cork", "Galway", "Limerick", "Kilkenny", "Waterford"],
+    "past_attendance": [1200, 900, 850, 750, 520, 600],
+    "weather_score": [9, 7, 7, 6, 7, 6],
+    "travel_cost": [250, 320, 320, 260, 10, 120]
+})
+future_events["city_encoded"] = future_events["city"].astype("category").cat.codes
+X_new = future_events[["city_encoded", "past_attendance", "weather_score"]]
+future_events["expected_customers"] = model.predict(X_new)
 
-# --- Sidebar Inputs ---
-st.sidebar.title("⚙️ Configuration Panel")
+# ---------------------------
+# 3. Item definitions
+# ---------------------------
+base_items = [
+    {"name": "t-shirt", "weight": 0.3, "cost": 7.00, "sale": 20.00, "profit": 13.00, "popularity": 0.3},
+    {"name": "denim shorts", "weight": 0.4, "cost": 10.00, "sale": 28.00, "profit": 18.00, "popularity": 0.25},
+    {"name": "crop top", "weight": 0.25, "cost": 6.00, "sale": 22.00, "profit": 16.00, "popularity": 0.2},
+    {"name": "festival hat", "weight": 0.2, "cost": 3.00, "sale": 18.00, "profit": 15.00, "popularity": 0.15},
+    {"name": "sundress", "weight": 0.5, "cost": 12.00, "sale": 35.00, "profit": 23.00, "popularity": 0.1},
+]
 
-st.sidebar.subheader("🚚 Van Settings")
-van_weight = st.sidebar.slider("Max Weight (kg)", 20, 100, 50, step=5)
-van_volume = st.sidebar.slider("Max Volume (m³)", 0.1, 1.0, 0.4, step=0.05)
-cost_per_km = st.sidebar.slider("Fuel Cost per km (€)", 0.1, 2.0, 0.5, step=0.1)
+# ---------------------------
+# 4. Bounded Knapsack with Slots
+# ---------------------------
+def bounded_knapsack(items, capacity_kg, max_slots):
+    scale = 100
+    capacity = int(capacity_kg * scale)
 
-st.sidebar.subheader("🧺 Display Capacity per Event")
-display_capacity = {
-    "Galway": st.sidebar.slider("Galway (slots)", 5, 30, 20),
-    "Cork": st.sidebar.slider("Cork (slots)", 5, 30, 25),
-    "Kilkenny": st.sidebar.slider("Kilkenny (slots)", 5, 30, 15)
-}
+    expanded = []
+    for item in items:
+        for _ in range(item["stock"]):
+            expanded.append({
+                "name": item["name"],
+                "weight": int(item["weight"] * scale),
+                "profit": item["profit"]
+            })
 
-# --- Data Definitions ---
-events = ['Galway', 'Cork', 'Kilkenny']
-items = ['TShirt', 'Jacket', 'Sneakers', 'Dress']
+    dp = [[0] * (max_slots + 1) for _ in range(capacity + 1)]
+    counts = [[{} for _ in range(max_slots + 1)] for _ in range(capacity + 1)]
 
-# ✅ Updated realistic parameters
-weights = {
-    'TShirt': 0.25,
-    'Jacket': 1.8,
-    'Sneakers': 1.2,
-    'Dress': 0.6
-}
+    for item in expanded:
+        w = item["weight"]
+        p = item["profit"]
+        for cap in range(capacity, w - 1, -1):
+            for slot in range(max_slots, 0, -1):
+                if dp[cap - w][slot - 1] + p > dp[cap][slot]:
+                    dp[cap][slot] = dp[cap - w][slot - 1] + p
+                    counts[cap][slot] = counts[cap - w][slot - 1].copy()
+                    counts[cap][slot][item["name"]] = counts[cap][slot].get(item["name"], 0) + 1
 
-volumes = {
-    'TShirt': 0.0015,
-    'Jacket': 0.008,
-    'Sneakers': 0.006,
-    'Dress': 0.0035
-}
+    return dp[capacity][max_slots], counts[capacity][max_slots]
 
-spaces = {
-    'TShirt': 1,
-    'Jacket': 3,
-    'Sneakers': 2,
-    'Dress': 1
-}
+# ---------------------------
+# 5. Per-City Planning
+# ---------------------------
+van_capacity_kg = 100.0
+tent_item_slots = 50
+conversion_rate = 0.6  # 60% of people buy
 
-profits = {
-    ('TShirt', 'Galway'): 10,   ('Jacket', 'Galway'): 40,   ('Sneakers', 'Galway'): 28,   ('Dress', 'Galway'): 22,
-    ('TShirt', 'Cork'): 12,     ('Jacket', 'Cork'): 42,     ('Sneakers', 'Cork'): 30,     ('Dress', 'Cork'): 25,
-    ('TShirt', 'Kilkenny'): 9,  ('Jacket', 'Kilkenny'): 38, ('Sneakers', 'Kilkenny'): 26, ('Dress', 'Kilkenny'): 20
-}
+results = []
 
-distances = {'Galway': 186, 'Cork': 220, 'Kilkenny': 102}
+for _, row in future_events.iterrows():
+    city = row["city"]
+    travel_cost = float(row["travel_cost"])
+    expected_customers = float(row["expected_customers"])
+    estimated_sales = max(1, int(expected_customers * conversion_rate))
 
-# --- Optimization Model ---
-model = LpProblem("Inventory_and_Routing_Optimization", LpMaximize)
+    # Create city-specific item list
+    city_items = []
+    total_stock_units = 0
 
-# Decision Variables
-x = LpVariable.dicts("Select", [(i, e) for i in items for e in events], lowBound=0, cat=LpInteger)
-y = LpVariable.dicts("Visit", events, 0, 1, LpBinary)
+    for item in base_items:
+        raw_est = max(1, int(item["popularity"] * estimated_sales))
+        city_items.append({**item, "stock": raw_est})
+        total_stock_units += raw_est
 
-# Objective: Maximize profit - travel cost
-model += (
-    lpSum(profits[(i, e)] * x[(i, e)] for i in items for e in events) -
-    cost_per_km * lpSum(distances[e] * y[e] for e in events)
-)
+    # Normalize to fit tent slots
+    if total_stock_units > tent_item_slots:
+        scale_factor = tent_item_slots / total_stock_units
+        for i in range(len(city_items)):
+            new_stock = max(1, int(city_items[i]["stock"] * scale_factor))
+            city_items[i]["stock"] = new_stock
 
-# Capacity Constraints (global)
-model += lpSum(weights[i] * x[(i, e)] for i in items for e in events) <= van_weight, "WeightCapacity"
-model += lpSum(volumes[i] * x[(i, e)] for i in items for e in events) <= van_volume, "VolumeCapacity"
+    # Run knapsack
+    profit, item_plan = bounded_knapsack(city_items, van_capacity_kg, tent_item_slots)
+    net_profit = profit - travel_cost
 
-# Display and linking constraints
-for e in events:
-    model += lpSum(spaces[i] * x[(i, e)] for i in items) <= display_capacity[e], f"DisplayCap_{e}"
-    for i in items:
-        model += x[(i, e)] <= 1000 * y[e], f"LinkItemToVisit_{i}_{e}"
+    results.append({
+        "city": city,
+        "expected_customers": int(expected_customers),
+        "travel_cost": travel_cost,
+        "gross_profit": profit,
+        "net_profit": net_profit,
+        "items": item_plan
+    })
 
-# Solve
-model.solve()
+# ---------------------------
+# 6. Pick Top 3 Cities by Net Profit
+# ---------------------------
+top_cities = sorted(results, key=lambda x: x["net_profit"], reverse=True)[:3]
 
-# --- Layout: Two-column Results ---
-col1, col2 = st.columns(2)
+# ---------------------------
+# 7. Print Results
+# ---------------------------
+for result in top_cities:
+    print(f"\nCity: {result['city']}")
+    print(f"Expected Customers: {result['expected_customers']}")
+    print(f"Travel Cost: €{result['travel_cost']:.2f}")
+    print(f"Gross Profit: €{result['gross_profit']:.2f}")
+    print(f"Net Profit: €{result['net_profit']:.2f}")
+    print("Items to Pack:")
+    for item, qty in result["items"].items():
+        print(f"  - {item}: {qty} units")
 
-with col1:
-    st.markdown("## 📈 Optimization Summary")
-    st.metric(label="Net Profit (€)", value=f"{value(model.objective):.2f}")
-    st.markdown("### ✅ Events Selected")
-    for e in events:
-        if y[e].value() == 1:
-            st.markdown(f"- {e} ({distances[e]} km)")
+# ---------------------------
+# --- Streamlit App Wrapper ---
+# ---------------------------
 
-with col2:
-    st.markdown("## 📦 Product Quantities per Event")
-    for e in events:
-        if y[e].value() == 1:
-            st.markdown(f"**{e}**")
-            table = ""
-            for i in items:
-                qty = x[(i, e)].value()
-                if qty and qty > 0:
-                    table += f"- {i}: **{int(qty)} units**  \n"
-            st.markdown(table or "_No items selected_")
+def get_city_coords():
+    # Hardcoded coordinates for demo; replace with real data as needed
+    return {
+        "Dublin": (53.3498, -6.2603),
+        "Cork": (51.8985, -8.4756),
+        "Galway": (53.2707, -9.0568),
+        "Limerick": (52.6638, -8.6267),
+        "Kilkenny": (52.6541, -7.2448),
+        "Waterford": (52.2593, -7.1101)
+    }
 
+def get_city_order():
+    # Example journey order for the map
+    return ["Dublin", "Cork", "Limerick", "Galway", "Kilkenny", "Waterford"]
 
+def make_folium_map(city_order, city_coords, show_arrows=True, highlight_city=None):
+    # Center map on Ireland
+    m = folium.Map(location=[53.0, -8.0], zoom_start=7)
+    # Draw path with arrows
+    for i in range(len(city_order) - 1):
+        start = city_coords[city_order[i]]
+        end = city_coords[city_order[i+1]]
+        folium.PolyLine(
+            [start, end],
+            color="blue",
+            weight=5,
+            opacity=0.7,
+            tooltip=f"{city_order[i]} → {city_order[i+1]}"
+        ).add_to(m)
+        # Add arrow marker for direction
+        if show_arrows:
+            # Calculate arrow position (midpoint)
+            mid_lat = (start[0] + end[0]) / 2
+            mid_lon = (start[1] + end[1]) / 2
+            folium.RegularPolygonMarker(
+                location=(mid_lat, mid_lon),
+                number_of_sides=3,
+                radius=10,
+                color='red',
+                fill_color='red',
+                rotation=folium.utilities.get_bearing(start, end),
+                fill_opacity=0.8
+            ).add_to(m)
+    # Add city markers
+    for city, coords in city_coords.items():
+        folium.Marker(
+            location=coords,
+            popup=city,
+            icon=folium.Icon(color="green" if city == highlight_city else "blue", icon="info-sign")
+        ).add_to(m)
+    return m
 
-# --- Map Visualization ---
-st.markdown("## 🗺️ Delivery Route Map")
+def get_results_df(results):
+    # Flatten results for DataFrame
+    rows = []
+    for r in results:
+        row = r.copy()
+        row.pop("items")
+        rows.append(row)
+    return pd.DataFrame(rows)
 
-# Filter visited locations
-route = ['Dublin'] + [e for e in events if y[e].value() == 1] + ['Dublin']  # round trip
+def get_items_df(results, city):
+    # Return items DataFrame for a city
+    for r in results:
+        if r["city"] == city:
+            items = r["items"]
+            return pd.DataFrame([{"Item": k, "Units": v} for k, v in items.items()])
+    return pd.DataFrame()
 
-m = folium.Map(location=locations["Dublin"], zoom_start=7)
+def main():
+    st.set_page_config(page_title="Company Name - Event Planning Demo", layout="wide")
+    st.title("Company Name: Event Planning & Optimization Demo")
+    st.markdown(
+        "This interactive dashboard demonstrates event planning, demand forecasting, and logistics optimization for multiple cities. "
+        "Use the filters to explore city-level and global analyses, and view the optimized journey on the map."
+    )
 
-# Add markers
-for loc in route:
-    folium.Marker(
-        locations[loc],
-        popup=loc,
-        icon=folium.Icon(color='blue' if loc != 'Dublin' else 'green')
-    ).add_to(m)
+    # --- Sidebar Filters ---
+    st.sidebar.header("Filters & Experimentation")
+    city_list = [r["city"] for r in results]
+    city_coords = get_city_coords()
+    city_order = get_city_order()
 
-# Draw route
-coords = [locations[loc] for loc in route]
-folium.PolyLine(coords, color="red", weight=2.5, opacity=0.9).add_to(m)
+    # City/global selector
+    view_mode = st.sidebar.radio("View Mode", ["Global Overview", "City Detail"])
+    selected_city = None
+    if view_mode == "City Detail":
+        selected_city = st.sidebar.selectbox("Select City", city_list)
 
-# Show map in Streamlit
-st_folium(m, width=725, height=450)
+    # Conversion rate slider (live experiment)
+    conv_rate = st.sidebar.slider("Conversion Rate (%)", min_value=10, max_value=100, value=int(conversion_rate*100), step=5)
+    # Van capacity slider
+    van_cap = st.sidebar.slider("Van Capacity (kg)", min_value=50, max_value=200, value=int(van_capacity_kg), step=10)
+    # Tent slots slider
+    tent_slots = st.sidebar.slider("Tent Item Slots", min_value=10, max_value=100, value=tent_item_slots, step=5)
+
+    # --- Re-run planning with new parameters if changed ---
+    # (For demo, only conversion rate, van capacity, tent slots are re-applied)
+    def rerun_planning(conv_rate, van_cap, tent_slots):
+        new_results = []
+        for _, row in future_events.iterrows():
+            city = row["city"]
+            travel_cost = float(row["travel_cost"])
+            expected_customers = float(row["expected_customers"])
+            estimated_sales = max(1, int(expected_customers * (conv_rate/100.0)))
+
+            # Create city-specific item list
+            city_items = []
+            total_stock_units = 0
+
+            for item in base_items:
+                raw_est = max(1, int(item["popularity"] * estimated_sales))
+                city_items.append({**item, "stock": raw_est})
+                total_stock_units += raw_est
+
+            # Normalize to fit tent slots
+            if total_stock_units > tent_slots:
+                scale_factor = tent_slots / total_stock_units
+                for i in range(len(city_items)):
+                    new_stock = max(1, int(city_items[i]["stock"] * scale_factor))
+                    city_items[i]["stock"] = new_stock
+
+            # Run knapsack
+            profit, item_plan = bounded_knapsack(city_items, van_cap, tent_slots)
+            net_profit = profit - travel_cost
+
+            new_results.append({
+                "city": city,
+                "expected_customers": int(expected_customers),
+                "travel_cost": travel_cost,
+                "gross_profit": profit,
+                "net_profit": net_profit,
+                "items": item_plan
+            })
+        return new_results
+
+    filtered_results = rerun_planning(conv_rate, van_cap, tent_slots)
+    filtered_top_cities = sorted(filtered_results, key=lambda x: x["net_profit"], reverse=True)[:3]
+
+    # --- Main UI: Tabs for City/Global ---
+    tab1, tab2 = st.tabs(["Global Overview", "City Detail"])
+
+    with tab1:
+        st.subheader("Top 3 Cities by Net Profit")
+        df = get_results_df(filtered_top_cities)
+        st.dataframe(df.style.format({"travel_cost": "€{:.2f}", "gross_profit": "€{:.2f}", "net_profit": "€{:.2f}"}), use_container_width=True)
+
+        st.subheader("Optimized Journey Map")
+        m = make_folium_map(city_order, city_coords, show_arrows=True)
+        st_folium(m, width=900, height=500)
+
+        st.subheader("All Cities - Summary Table")
+        all_df = get_results_df(filtered_results)
+        st.dataframe(all_df.style.format({"travel_cost": "€{:.2f}", "gross_profit": "€{:.2f}", "net_profit": "€{:.2f}"}), use_container_width=True)
+
+    with tab2:
+        st.subheader("City Detail")
+        city = selected_city if selected_city else city_list[0]
+        st.markdown(f"### {city}")
+        # City summary
+        for r in filtered_results:
+            if r["city"] == city:
+                st.metric("Expected Customers", r["expected_customers"])
+                st.metric("Travel Cost", f"€{r['travel_cost']:.2f}")
+                st.metric("Gross Profit", f"€{r['gross_profit']:.2f}")
+                st.metric("Net Profit", f"€{r['net_profit']:.2f}")
+                break
+        # City items
+        st.markdown("#### Items to Pack")
+        items_df = get_items_df(filtered_results, city)
+        st.dataframe(items_df, use_container_width=True)
+        # City map
+        st.markdown("#### City Location on Map")
+        m2 = folium.Map(location=city_coords[city], zoom_start=10)
+        folium.Marker(
+            location=city_coords[city],
+            popup=city,
+            icon=folium.Icon(color="green", icon="star")
+        ).add_to(m2)
+        st_folium(m2, width=700, height=400)
+
+    # --- Footer ---
+    st.markdown("---")
+    st.caption("Demo app for Company Name. Powered by Streamlit, scikit-learn, and folium. Ready for Streamlit Cloud deployment.")
+
+if __name__ == "__main__":
+    main()
