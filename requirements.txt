@@ -2,3 +2,5 @@ streamlit
 pulp
 folium
 streamlit-folium
+scikit-learn
+pandas
