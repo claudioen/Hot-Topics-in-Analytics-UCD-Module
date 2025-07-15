@@ -136,7 +136,7 @@ def compute_results(future_events, base_items, van_capacity_kg, tent_item_slots,
     return results
 
 # ---------------------------
-# 6. Pick Top 3 Cities by Net Profit
+# 6. Pick Top N Cities by Net Profit
 # ---------------------------
 def get_top_cities(results, n=3):
     return sorted(results, key=lambda x: x["net_profit"], reverse=True)[:n]
@@ -170,9 +170,13 @@ def get_city_coords():
         "Waterford": (52.2593, -7.1101)
     }
 
-def get_city_order():
-    # Example journey order for the map
-    return ["Dublin", "Cork", "Limerick", "Galway", "Kilkenny", "Waterford"]
+def get_city_order(selected_cities):
+    # Always start from Kilkenny, then the selected cities in the chosen order (excluding Kilkenny if present)
+    order = ["Kilkenny"]
+    for city in selected_cities:
+        if city != "Kilkenny":
+            order.append(city)
+    return order
 
 @st.cache_data(show_spinner=False)
 def make_folium_map(city_order, city_coords, show_arrows=True, highlight_city=None):
@@ -250,79 +254,124 @@ def main():
         "Use the filters to explore city-level and global analyses, and view the optimized journey on the map."
     )
 
-    # --- Sidebar Filters ---
-    st.sidebar.header("Filters & Experimentation")
-    city_coords = get_city_coords()
-    city_order = get_city_order()
-    base_items = get_base_items()
+    # --- ML Forecasting Section (on top of sidebar) ---
+    st.sidebar.header("1. Demand Forecasting (ML)")
+    st.sidebar.markdown("The following predictions are based on historical data and machine learning.")
     future_events = get_predicted_future_events()
+    st.sidebar.dataframe(
+        future_events[["city", "past_attendance", "weather_score", "expected_customers"]],
+        use_container_width=True,
+        hide_index=True
+    )
 
-    # City/global selector
-    city_list = list(city_coords.keys())
-    view_mode = st.sidebar.radio("View Mode", ["Global Overview", "City Detail"])
-    selected_city = None
-    if view_mode == "City Detail":
-        selected_city = st.sidebar.selectbox("Select City", city_list)
+    # --- Sidebar Filters ---
+    st.sidebar.header("2. Planning Parameters")
+    city_coords = get_city_coords()
+    all_cities = list(city_coords.keys())
+    # Remove Kilkenny from selectable cities (as it's always the starting point)
+    selectable_cities = [c for c in all_cities if c != "Kilkenny"]
 
-    # Conversion rate slider (live experiment)
-    conv_rate = st.sidebar.slider("Conversion Rate (%)", min_value=10, max_value=100, value=60, step=5)
+    # Let user select which cities to visit (orderable)
+    st.sidebar.markdown("**Select cities to visit (order matters):**")
+    selected_cities = st.sidebar.multiselect(
+        "Cities to visit (excluding Kilkenny, which is always the starting point):",
+        options=selectable_cities,
+        default=selectable_cities,
+        key="city_multiselect"
+    )
+    # Optionally allow user to reorder (simulate with a text input for order)
+    if selected_cities:
+        st.sidebar.markdown("**Order of cities (comma separated, e.g. Dublin,Cork):**")
+        order_input = st.sidebar.text_input(
+            "Order (optional, leave blank for default):",
+            value=",".join(selected_cities),
+            key="city_order_input"
+        )
+        ordered_cities = [c.strip() for c in order_input.split(",") if c.strip() in selected_cities]
+        # If user input is valid, use it; else fallback to selected_cities order
+        if set(ordered_cities) == set(selected_cities) and len(ordered_cities) == len(selected_cities):
+            selected_cities = ordered_cities
+
     # Van capacity slider
     van_cap = st.sidebar.slider("Van Capacity (kg)", min_value=50, max_value=200, value=100, step=10)
     # Tent slots slider
     tent_slots = st.sidebar.slider("Tent Item Slots", min_value=10, max_value=100, value=50, step=5)
+    # Add a useful filter: Minimum expected customers per city
+    min_customers = st.sidebar.slider("Minimum Expected Customers (per city)", min_value=0, max_value=1500, value=0, step=50)
 
     # --- Results (cached) ---
+    base_items = get_base_items()
+    # Filter future_events to only selected cities (plus Kilkenny always included for reference)
+    filtered_events = future_events[future_events["city"].isin(["Kilkenny"] + selected_cities)].copy()
+    # Filter by minimum expected customers
+    filtered_events = filtered_events[filtered_events["expected_customers"] >= min_customers]
+
+    # Always use 100% conversion rate as per instructions
     results = compute_results(
-        future_events,
+        filtered_events,
         base_items,
         van_cap,
         tent_slots,
-        conv_rate / 100.0
+        1.0  # 100% conversion rate
     )
-    top_cities = get_top_cities(results, n=3)
+    # Top N cities (let user choose N, default 3)
+    st.sidebar.markdown("**Number of top cities to show:**")
+    n_top = st.sidebar.slider("Top N Cities", min_value=1, max_value=len(filtered_events), value=min(3, len(filtered_events)), step=1)
+    top_cities = get_top_cities(results, n=n_top)
 
     # --- Main UI: Tabs for City/Global ---
     tab1, tab2 = st.tabs(["Global Overview", "City Detail"])
 
     with tab1:
-        st.subheader("Top 3 Cities by Net Profit")
+        st.subheader(f"Top {n_top} Cities by Net Profit")
         df = get_results_df(top_cities)
         st.dataframe(df.style.format({"travel_cost": "€{:.2f}", "gross_profit": "€{:.2f}", "net_profit": "€{:.2f}"}), use_container_width=True)
 
         st.subheader("Optimized Journey Map")
-        # Only redraw map if parameters change
-        m = make_folium_map(city_order, city_coords, show_arrows=True)
-        st_folium(m, width=900, height=500)
+        # The journey always starts in Kilkenny, then follows the selected cities in order
+        journey_order = get_city_order(selected_cities)
+        # Only show cities that are in filtered_events (in case of min_customers filter)
+        journey_order = [c for c in journey_order if c in filtered_events["city"].values]
+        if len(journey_order) < 2:
+            st.info("Select at least one city (besides Kilkenny) with enough expected customers to show the journey.")
+        else:
+            m = make_folium_map(journey_order, city_coords, show_arrows=True)
+            st_folium(m, width=900, height=500)
 
-        st.subheader("All Cities - Summary Table")
+        st.subheader("All Selected Cities - Summary Table")
         all_df = get_results_df(results)
         st.dataframe(all_df.style.format({"travel_cost": "€{:.2f}", "gross_profit": "€{:.2f}", "net_profit": "€{:.2f}"}), use_container_width=True)
 
     with tab2:
         st.subheader("City Detail")
-        city = selected_city if selected_city else city_list[0]
-        st.markdown(f"### {city}")
-        # City summary
-        for r in results:
-            if r["city"] == city:
-                st.metric("Expected Customers", r["expected_customers"])
-                st.metric("Travel Cost", f"€{r['travel_cost']:.2f}")
-                st.metric("Gross Profit", f"€{r['gross_profit']:.2f}")
-                st.metric("Net Profit", f"€{r['net_profit']:.2f}")
-                break
-        # City items
-        st.markdown("#### Items to Pack")
-        items_df = get_items_df(results, city)
-        st.dataframe(items_df, use_container_width=True)
-        # City map
-        st.markdown("#### City Location on Map")
-        m2 = folium.Map(location=city_coords[city], zoom_start=10, control_scale=True)
-        folium.Marker(
-            location=city_coords[city],
-            popup=city,
-            icon=folium.Icon(color="green", icon="star")
-        ).add_to(m2)
-        st_folium(m2, width=700, height=400)
+        # Only allow selection among filtered cities
+        city_list = list(filtered_events["city"].values)
+        if not city_list:
+            st.warning("No cities to display. Adjust your filters.")
+        else:
+            selected_city = st.selectbox("Select City", city_list)
+            st.markdown(f"### {selected_city}")
+            # City summary
+            for r in results:
+                if r["city"] == selected_city:
+                    st.metric("Expected Customers", r["expected_customers"])
+                    st.metric("Travel Cost", f"€{r['travel_cost']:.2f}")
+                    st.metric("Gross Profit", f"€{r['gross_profit']:.2f}")
+                    st.metric("Net Profit", f"€{r['net_profit']:.2f}")
+                    break
+            # City items
+            st.markdown("#### Items to Pack")
+            items_df = get_items_df(results, selected_city)
+            st.dataframe(items_df, use_container_width=True)
+            # City map
+            st.markdown("#### City Location on Map")
+            m2 = folium.Map(location=city_coords[selected_city], zoom_start=10, control_scale=True)
+            folium.Marker(
+                location=city_coords[selected_city],
+                popup=selected_city,
+                icon=folium.Icon(color="green", icon="star")
+            ).add_to(m2)
+            st_folium(m2, width=700, height=400)
 
     # --- Footer ---
     st.markdown("---")
