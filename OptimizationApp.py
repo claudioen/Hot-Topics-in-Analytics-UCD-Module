@@ -247,8 +247,8 @@ def get_items_df(results, city):
     return pd.DataFrame()
 
 def main():
-    st.set_page_config(page_title="Company Name - Event Planning Demo", layout="wide")
-    st.title("Company Name: Event Planning & Optimization Demo")
+    st.set_page_config(page_title="KPS Consulting - Event Planning Demo", layout="wide")
+    st.title("KPS Consulting: Event Planning & Optimization Demo")
     st.markdown(
         "This interactive dashboard demonstrates event planning, demand forecasting, and logistics optimization for multiple cities. "
         "Use the filters to explore city-level and global analyses, and view the optimized journey on the map."
